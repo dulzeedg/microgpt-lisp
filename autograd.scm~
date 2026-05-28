@@ -1,0 +1,123 @@
+; Autograd
+; A Value Node
+; data        -> scalar number
+; grad        -> accumulated gradient
+; children    -> parent nodes
+; local-grads -> local derivatives wrt children
+
+(define (make-value data)
+  (vector data ; data
+          0.0  ; grad
+          '()  ; children
+          '())) ; local-grads
+
+;; Accessors
+(define (value-data v)
+  (vector-ref v 0))
+
+(define (value-grad v)
+  (vector-ref v 1))
+
+(define (value-children)
+  (vector-ref v 2))
+
+(define (value-local-grads)
+  (vetor-ref v 3))
+
+;; Mutators
+(define (set-value-grad! v x)
+  (vector-set! v 1 x))
+
+(define (set-value-children! v xs)
+  (vector-set! v 2 xs))
+
+(define (set-value-local-grads v xs)
+  (vector-set! v 3 xs))
+
+;; Operations
+(define (v+ a b)
+  (let ((out (make-value (+
+                          (value-data a)
+                          (value-data b)))))
+    (set-value-children! out (list a b))
+    (set-value-local-grads! out '(1.0 1.0))
+    out))
+
+(define (v* a b)
+  (let ((out (make-value (*
+                          (value-data a)
+                          (value-data b)))))
+    (set-value-children! out (list a b))
+    (set-value-local-grads! out (list (value-data b)
+                                      (value-data a)))
+    out))
+
+(define (vpow a n)
+  (let ((out (make-value (expt
+                          (value-data a) n))))
+    (set-value-children! out (list a))
+    (set-value-local-grads! out (list (*
+                                       (expt (value-data a)
+                                             (- n 1)))))
+    out))
+
+;; RELU
+(define (vrelu a)
+  (let ((x (value-data a))
+        (out (make-value (if (> x 0) x 0))))
+    (set-value-children! out (list a))
+    (set-value-local-grads! out (list (if (> x 0)
+                                          1.0
+                                          0.0)))
+    out))
+
+;; Topological sort
+(define (contains? xs x)
+  (cond ((null? xs) #f)
+        ((eq? (car xs) x) #t)
+        (else (contains? (cdr xs) x))))
+
+(define (build-topo v visited topo)
+  (if (contains? visited v)
+      (cons visited topo)
+      (let ((visited2 (cons v visited)))
+        (let loop ((children (value-children v))
+                   (vis visited2)
+                   (tp topo))
+          (if (null? children)
+              (cons vis (cons v tp))
+              (let* ((result (build-topo (car children)
+                                         vis
+                                         tp))
+                     (new-vis (car result))
+                     (new-topo (cdr result)))
+                (loop (cdr children)
+                      new-vis
+                      new-topo)))))))
+
+;; Back propagation
+(define (backward loss)
+  ;; Build topo order
+  (let* ((result (build-topo loss '() '()))
+         (topo (reverse (cdr result))))
+    ;; seed gradient
+    (set-value-grad! loss 1.0)
+
+    ;; reverse traversal
+    (for-each (lambda (v)
+                (let ((grad (value-grad v))
+                      (children (value-children v))
+                      (locals (value-locals-grads v)))
+                  (let loop ((cs children)
+                             (ls locals))
+                    (if (not (null? cs))
+                        (begin
+                          (let* ((child (car cs))
+                                 (local-grad (car ls))
+                                 (new-grad
+                                  (+ (value-grad child)
+                                     (* local-grad grad))))
+                            (set-value-grad! child new-grad)
+                            (loop (cdr cs)
+                                  (cdr ls))))))))
+              topo)))
