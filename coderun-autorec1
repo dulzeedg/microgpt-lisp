@@ -1,17 +1,5 @@
 #lang racket
-
-;; High level overview
-;; text -> tokens -> embeddings -> transformer -> logits
-;;      -> probabilities -> loss
-;;      -> gradients -> parameter updates
-
-;; after training
-;; start token -> transformer -> next token
-;;            -> append token
-;;            -> repeat
-
 ;; block 1
-
 (define names (list "abdul"))
 
 ;; read file line by line
@@ -25,27 +13,19 @@
             (loop (cons (string-trim line) lst)))))))
 
 (set! names (read-names "names.txt"))
-;; ("abdul" "john" "mary")
-
 
 (define uchars
-  (sort
-   (remove-duplicates
-    (apply append
-           (map string->list names)))
-   char<?))
+  (list #\a #\b #\c #\d #\e #\f #\g
+        #\h #\i #\j #\k #\l #\m
+        #\n #\o #\p #\q #\r #\s
+        #\t #\u #\v #\w #\x #\y #\z))
 
 (define BOS (length uchars))
-;; "abdul" becomes
-;; (BOS a b d u l BOS)
-;; then numeric (17 0 1 2 14 8 17) this is what gpt do internally
-
 (define vocab-size (+ (length uchars) 1))
 
 ;; block 2
-;; Autograd engine
 (define (make-value data)
-  (vector data 0.0 '() '()))
+  (vector data 0.0 '() '())) ; data, grad, children, local-grads
 
 (define (value-data v) (vector-ref v 0))
 (define (value-grad v) (vector-ref v 1))
@@ -56,12 +36,6 @@
 (define (set-value-grad! v x) (vector-set! v 1 x))
 (define (set-value-children! v xs) (vector-set! v 2 xs))
 (define (set-value-local-grads! v xs) (vector-set! v 3 xs))
-;; Value object becomes value = {
-;;  data: actual numeric value
-;;  grad: derivative accumulator
-;; children: inputs that created this node
-;;  local-grads: local derivatives
-;; }
 
 ;; operations
 (define (v+ a b)
@@ -180,16 +154,15 @@
           
 ;; helper Range
 (define (iota n)
-  (let loop ((i 0))
-    (if (= i n)
-        '()
-        (cons i (loop (+ i 1))))))
+  (if (= n 0)
+      '()
+      (cons 0 (map (lambda (x) (+ x 1)) (iota (- n 1))))))
 
 ;; matrix of Value objects
 (define (matrix nout nin)
   (if (= nout 0)
       '()
-      (cons (matrix-row nin) (matrix (- nout 1) nin))))
+      (cons (matrix-row nin) (matrix (- nout 1)))))
 
 (define (matrix-row n)
   (if (= n 0)
@@ -274,23 +247,10 @@
          exps)))
 
 (define (rmsnorm x)
-  (let* ((ms
-          (v/
-           (foldl v+
-                  (make-value 0.0)
-                  (map (lambda (xi)
-                         (v* xi xi))
-                       x))
-           (make-value (length x))))
-
-         (scale
-          (vpow
-           (v+ ms (make-value 1e-5))
-           -0.5)))
-
-    (map (lambda (xi)
-           (v* xi scale))
-         x)))
+  (let* ((ms (/ (apply + (map (lambda (xi) (* xi xi)) x))
+                (length x)))
+         (scale (/ 1 (sqrt (+ ms 1e-5)))))
+    (map (lambda (xi) (* xi scale)) x)))
 
 ;; GPT forward pass
 (define (gpt token-id pos-id keys values)
@@ -300,6 +260,7 @@
          (pos-emb (list-ref (cdr (assoc 'wpe state-dict)) pos-id))
          (x (map v+ tok-emb pos-emb)))
 
+    (define (rmsnorm xs) xs)
     (set! x (rmsnorm x))
 
     ;; Transformer layers
@@ -342,16 +303,14 @@
                          ;; attention logits
                          (attn-logits
                           (map (lambda (kh)
-                                 (v/ (foldl v+
-                                            (make-value 0.0)
-                                            (map v* q-h kh))
+                                 (v/ (foldl v+ (map v* q-h kh))
                                      (make-value (sqrt head-dim))))
                                k-h))
                          (attn-weights (softmax attn-logits))
                          ;; weighted sum
                          (head-out
                           (map (lambda (j)
-                                 (foldl v+ (make-value 0.0)
+                                 (foldl v+ '()
                                         (map (lambda (t)
                                                (v* (list-ref attn-weights t)
                                                    (list-ref (list-ref v-h t) j)))
@@ -493,54 +452,3 @@
 
         (train (+ step 1)))))
 (train 0)
-
-;; block 6
-;; --- inference: may the model babble back to us ---
-(define temperature 0.5)
-(display "\n--- inference (new, hallucinated names) ---\n")
-
-;; helper: weighted random choice
-;; helper: weighted random choice
-(define (weighted-random-choice weights)
-  (let* ((total (apply + weights))
-         (r (* total (random 1.0))))
-    
-    (let loop ((ws weights)
-               (acc 0.0)
-               (idx 0))
-
-      (if (null? ws)
-          (error "weighted-random-choice failed")
-
-          (let ((w (car ws)))
-            (if (< r (+ acc w))
-                idx
-                (loop (cdr ws)
-                      (+ acc w)
-                      (+ idx 1))))))))
-
-;; helper: generate one sample recursively
-(define (generate-sample pos-id token-id keys values acc)
-  (if (= pos-id block-size)
-      acc
-      (let* ((logits (gpt token-id pos-id keys values))
-             (scaled-logits (map (lambda (l) (v/ l (make-value temperature))) logits))
-             (probs (softmax scaled-logits))
-             (token-id-next (weighted-random-choice (map value-data probs))))
-        (if (= token-id-next BOS)
-            acc
-            (generate-sample (+ pos-id 1) token-id-next keys values
-                             (append acc (list (list-ref uchars token-id-next))))))))
-
-;; helper: generate n samples recursively
-(define (generate-n-samples sample-idx n)
-  (if (= sample-idx n)
-      'done
-      (let* ((keys (make-vector n-layer '()))
-             (values (make-vector n-layer '()))
-             (sample (generate-sample 0 BOS keys values '())))
-        (display (format "sample ~a: ~a\n" (+ sample-idx 1) (apply string-append sample)))
-        (generate-n-samples (+ sample-idx 1) n))))
-
-;; generate 20 samples
-(generate-n-samples 0 20)

@@ -1,0 +1,115 @@
+#lang racket
+;; model architecture
+
+;; computes linear transoformation
+(define (linear x w)
+  (map (lambda (wo)
+         (apply + (map * wo x)))
+       w))
+
+(define (softmax logits)
+  (let* ((max-val (apply max logits))
+         (exps (map (lambda (x)
+                      (exp (- x max-val)))
+                    logits))
+         (total (apply + exps)))
+    (map (lambda (e)
+           (/ e total))
+         exps)))
+
+(define (rmsnorm x)
+  (let* ((ms (/ (apply + (map (lambda (xi) (* xi xi)) x))
+                (length x)))
+         (scale (/ 1 (sqrt (+ ms 1e-5)))))
+    (map (lambda (xi) (* xi scale)) x)))
+
+;; GPT forward pass
+(define (gpt token-id pos-id keys values)
+  
+  ;; Embeddings: token + position
+  (let* ((tok-emb (list-ref (cdr (assoc 'wte state-dict)) token-id))
+         (pos-emb (list-ref (cdr (assoc 'wpe state-dict)) pos-id))
+         (x (map v+ tok-emb pos-emb)))
+
+    (define (rmsnorm xs) xs)
+    (set! x (rmsnorm x))
+
+    ;; Transformer layers
+    (define (run-layer li x)
+      (if (= li n-layer)
+          x
+          (let* (;; Multi-head Attention
+                 (x-residual x)
+                 (x-norm (rmsnorm x))
+                 (q (linear x-norm (cdr (assoc
+                                         (string->symbol (format "layer~a.attn_wq" li))
+                                         state-dict))))
+                 (k (linear x-norm (cdr (assoc
+                                         (string->symbol (format "layer~a.attn_wk" li))
+                                         state-dict))))
+                 (v (linear x-norm (cdr (assoc
+                                         (string->symbol (format "layer~a.attn_wv" li))
+                                         state-dict)))))
+
+            ;; update KV caches
+            (vector-set! keys li (append (vector-ref keys li) (list k)))
+            (vector-set! values li (append (vector-ref values li) (list v)))
+
+            ;; Compute all attention heads recursively
+
+            ;; helper 
+            (define (slice xs start end)
+              (take (drop xs start)
+                    (- end start)))
+            
+            (define (run-head h acc)
+              (if (= h n-head)
+                  acc
+                  (let* ((hs (* h head-dim))
+                         (q-h (slice q hs (+ hs head-dim)))
+                         (k-h (map (lambda (ki) (slice ki hs (+ hs head-dim)))
+                                   (vector-ref keys li)))
+                         (v-h (map (lambda (vi) (slice vi hs (+ hs head-dim)))
+                                   (vector-ref values li)))
+                         ;; attention logits
+                         (attn-logits
+                          (map (lambda (kh)
+                                 (v/ (foldl v+ (map v* q-h kh))
+                                     (make-value (sqrt head-dim))))
+                               k-h))
+                         ;; softmax placeholder
+                         (attn-weights (softmax attn-logits))
+                         ;; weighted sum
+                         (head-out
+                          (map (lambda (j)
+                                 (foldl v+ '()
+                                        (map (lambda (t)
+                                               (v* (list-ref attn-weights t)
+                                                   (list-ref (list-ref v-h t) j)))
+                                             (iota (length v-h)))))
+                               (iota head-dim))))
+                    (run-head (+ h 1) (append acc head-out)))))
+
+            (let* ((x-attn (run-head 0 '()))
+                   (x-attn-proj (linear x-attn (cdr (assoc (string->symbol (format "layer~a.attn_wo" li))
+                                                           state-dict))))
+                   (x1 (map v+ x-attn-proj x-residual))
+
+                   ;; MLP block 
+                   (x1-residual x1)
+                   (x1-norm (rmsnorm x1))
+                   (fc1 (linear x1-norm (cdr (assoc (string->symbol (format "layer~a.mlp_fc1" li))
+                                                    state-dict))))
+                   (act (map vrelu fc1))
+                   (fc2 (linear act (cdr (assoc (string->symbol (format "layer~a.mlp_fc2" li))
+                                                state-dict))))
+                   (x2 (map v+ fc2 x1-residual)))
+
+              ;; next layer
+              (run-layer (+ li 1) x2)))))
+
+    ;; run all layers
+    (define x-final (run-layer 0 x))
+
+    ;; final logits
+    (linear x-final (cdr (assoc 'lm-head state-dict)))))

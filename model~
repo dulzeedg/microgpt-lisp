@@ -1,0 +1,216 @@
+#lang racket
+;; model architecture
+
+;; computes linear transoformation
+(define (linear x w)
+  (map (lambda (wo)
+         (apply + (map * wo x)))
+       w))
+
+(define (softmax logits)
+  (let* ((max-val (apply max logits))
+         (exps (map (lambda (x)
+                      (exp (- x max-val)))
+                    logits))
+         (total (apply + exps)))
+    (map (lambda (e)
+           (/ e total))
+         exps)))
+
+(define (rmsnorm x)
+  (let* ((ms (/ (apply + (map (lambda (xi) (* xi xi)) x))
+                (length x)))
+         (scale (/ 1 (sqrt (+ ms 1e-5)))))
+    (map (lambda (xi) (* xi scale)) x)))
+
+;; ------------------------------------------------------------
+;; Tiny GPT forward pass in Scheme/Lisp
+;; ------------------------------------------------------------
+
+(define (gpt token-id pos-id keys values)
+
+  ;; token embedding
+  (define tok-emb
+    (list-ref (hash-ref state-dict 'wte) token-id))
+
+  ;; positional embedding
+  (define pos-emb
+    (list-ref (hash-ref state-dict 'wpe) pos-id))
+
+  ;; x = tok_emb + pos_emb
+  (define x
+    (map + tok-emb pos-emb))
+
+  ;; initial rmsnorm
+  (set! x (rmsnorm x))
+
+  ;; ----------------------------------------------------------
+  ;; transformer layers
+  ;; ----------------------------------------------------------
+
+  (do ((li 0 (+ li 1)))
+      ((= li n-layer))
+
+    ;; ------------------------
+    ;; 1) Attention block
+    ;; ------------------------
+
+    (define x-residual x)
+
+    (set! x (rmsnorm x))
+
+    ;; Q K V projections
+    (define q
+      (linear x
+              (hash-ref state-dict
+                        (string->symbol
+                         (string-append
+                          "layer"
+                          (number->string li)
+                          ".attn_wq")))))
+
+    (define k
+      (linear x
+              (hash-ref state-dict
+                        (string->symbol
+                         (string-append
+                          "layer"
+                          (number->string li)
+                          ".attn_wk")))))
+
+    (define v
+      (linear x
+              (hash-ref state-dict
+                        (string->symbol
+                         (string-append
+                          "layer"
+                          (number->string li)
+                          ".attn_wv")))))
+
+    ;; cache keys/values
+    (list-set! keys li
+               (append (list-ref keys li)
+                       (list k)))
+
+    (list-set! values li
+               (append (list-ref values li)
+                       (list v)))
+
+    (define x-attn '())
+
+    ;; multi-head attention
+    (do ((h 0 (+ h 1)))
+        ((= h n-head))
+
+      (define hs (* h head-dim))
+
+      ;; slice q
+      (define q-h
+        (take (drop q hs) head-dim))
+
+      ;; slice all previous k/v
+      (define k-h
+        (map (lambda (ki)
+               (take (drop ki hs) head-dim))
+             (list-ref keys li)))
+
+      (define v-h
+        (map (lambda (vi)
+               (take (drop vi hs) head-dim))
+             (list-ref values li)))
+
+      ;; attention logits
+      (define attn-logits
+        (map
+         (lambda (t)
+
+           (/ (apply +
+                     (map *
+                          q-h
+                          (list-ref k-h t)))
+              (sqrt head-dim)))
+
+         (iota (length k-h))))
+
+      ;; softmax
+      (define attn-weights
+        (softmax attn-logits))
+
+      ;; weighted value sum
+      (define head-out
+        (map
+         (lambda (j)
+
+           (apply +
+                  (map
+                   (lambda (t)
+                     (* (list-ref attn-weights t)
+                        (list-ref (list-ref v-h t) j)))
+                   (iota (length v-h)))))
+
+         (iota head-dim)))
+
+      ;; concatenate heads
+      (set! x-attn
+            (append x-attn head-out)))
+
+    ;; output projection
+    (set! x
+          (linear
+           x-attn
+           (hash-ref state-dict
+                     (string->symbol
+                      (string-append
+                       "layer"
+                       (number->string li)
+                       ".attn_wo")))))
+
+    ;; residual add
+    (set! x
+          (map + x x-residual))
+
+    ;; ------------------------
+    ;; 2) MLP block
+    ;; ------------------------
+
+    (set! x-residual x)
+
+    (set! x (rmsnorm x))
+
+    ;; fc1
+    (set! x
+          (linear
+           x
+           (hash-ref state-dict
+                     (string->symbol
+                      (string-append
+                       "layer"
+                       (number->string li)
+                       ".mlp_fc1")))))
+
+    ;; relu
+    (set! x
+          (map (lambda (xi)
+                 (max 0 xi))
+               x))
+
+    ;; fc2
+    (set! x
+          (linear
+           x
+           (hash-ref state-dict
+                     (string->symbol
+                      (string-append
+                       "layer"
+                       (number->string li)
+                       ".mlp_fc2")))))
+
+    ;; residual add
+    (set! x
+          (map + x x-residual)))
+
+  ;; final logits
+
+  (linear
+   x
+   (hash-ref state-dict 'lm-head)))
