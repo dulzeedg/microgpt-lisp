@@ -187,14 +187,24 @@
 
 ;; matrix of Value objects
 (define (matrix nout nin)
-  (if (= nout 0)
-      '()
-      (cons (matrix-row nin) (matrix (- nout 1) nin))))
-
+  (let ((m (make-vector nout)))
+    (let loop ((i 0))
+      (if (< i nout)
+          (begin
+            (vector-set! m i (matrix-row nin))
+            (loop (+ i 1)))
+          m))))
 (define (matrix-row n)
-  (if (= n 0)
-      '()
-      (cons (make-value (normal-random 0 0.08)) (matrix-row (- n 1)))))
+  (let ((row (make-vector n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set!
+             row
+             i
+             (make-value (normal-random 0 0.08)))
+            (loop (+ i 1)))
+          row))))
 
 (define state-dict
   (append
@@ -257,11 +267,29 @@
 
 ;; computes linear transoformation
 (define (dot a b)
-  (foldl v+ (make-value 0.0)
-         (map v* a b)))
+  (let loop ((i 0)
+             (acc (make-value 0.0)))
+    (if (= i (vector-length a))
+        acc
+        (loop (+ i 1)
+              (v+
+               acc
+               (v*
+                (vector-ref a i)
+                (vector-ref b i)))))))
 
 (define (linear x w)
-  (map (lambda (wo) (dot wo x)) w))
+  (let* ((nout (vector-length w))
+         (out  (make-vector nout)))
+    (let loop ((i 0))
+      (if (< i nout)
+          (begin
+            (vector-set!
+             out
+             i
+             (dot (vector-ref w i) x))
+            (loop (+ i 1)))
+          out))))
 
 (define (softmax logits)
   (let* ((max-val (apply max (map value-data logits)))
@@ -320,8 +348,8 @@
                                          state-dict)))))
 
             ;; update KV caches
-            (vector-set! keys li (append (vector-ref keys li) (list k)))
-            (vector-set! values li (append (vector-ref values li) (list v)))
+            (vector-set! keys li (vector-set! (vector-ref keys li) pos-id k))
+            (vector-set! values li (vector-set! (vector-ref values li) pos-id v))
 
             ;; Compute all attention heads recursively
 
@@ -359,7 +387,7 @@
                                (iota head-dim))))
                     (run-head (+ h 1) (append acc head-out)))))
 
-            (let* ((x-attn (run-head 0 '()))
+            (let* ((x-attn (make-vector n-embd))
                    (x-attn-proj (linear x-attn (cdr (assoc (string->symbol (format "layer~a.attn_wo" li))
                                                            state-dict))))
                    (x1 (map v+ x-attn-proj x-residual))
@@ -408,6 +436,16 @@
       ((equal? (car lst) x) i)
       (else (loop (cdr lst) (+ i 1))))))
 
+(define keys (make-vector n-layer))
+(define values (make-vector))
+(let loop ((i 0))
+  (if (< i n-layer)
+      (begin
+        (vector-set! keys i (make-vector block-size))
+        (vector-set! values i (make-vector block-size))
+        (loop (+ i 1)))
+      'end))
+
 (define (train step)
   (if (= step num-steps)
       'done
@@ -427,8 +465,8 @@
              (n (min block-size (- (length tokens) 1)))
 
              ;; KV cache
-             (keys (make-vector n-layer '()))
-             (values (make-vector n-layer '()))
+             ;;(keys (make-vector n-layer '()))
+             ;;(values (make-vector n-layer '()))
 
              ;; forward pass
              (losses
