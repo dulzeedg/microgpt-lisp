@@ -1,0 +1,254 @@
+#lang racket
+;read file
+(define names (list "abdul"))
+(call-with-input-file "names.txt"
+  (lambda (i)
+    (define (readrec i)
+      (let ((name (read-line i)))
+        (if (eof-object? name)
+            (display "END")
+            (begin
+              (set! names
+                   (cons (string-trim name) names))
+              (readrec i)))))
+    (readrec i)))
+(set! names (reverse names))
+;(string-join names "")
+(define uchars
+  '("a" "b" "c" "d" "e" "f" "g"
+    "h" "i" "j" "k" "l" "m"
+    "n" "o" "p" "q" "r" "s"
+    "t" "u" "v" "w" "x" "y" "z"))
+(define BOS (length uchars))
+(define vocab_size (+ (length uchars) 1))
+(display vocab_size)
+
+(define (make-value data)
+  (vector data ; data
+          0.0  ; grad
+          '()  ; children
+          '())) ; local-grads
+
+;; Accessors
+(define (value-data v)
+  (vector-ref v 0))
+
+(define (value-grad v)
+  (vector-ref v 1))
+
+(define (value-children v)
+  (vector-ref v 2))
+
+(define (value-local-grads v)
+  (vector-ref v 3))
+
+;; Mutators
+(define (set-value-grad! v x)
+  (vector-set! v 1 x))
+
+(define (set-value-children! v xs)
+  (vector-set! v 2 xs))
+
+(define (set-value-local-grads! v xs)
+  (vector-set! v 3 xs))
+
+;; Operations
+(define (v+ a b)
+  (let ((out (make-value (+
+                          (value-data a)
+                          (value-data b)))))
+    (set-value-children! out (list a b))
+    (set-value-local-grads! out '(1.0 1.0))
+    out))
+
+(define (v* a b)
+  (let ((out (make-value (*
+                          (value-data a)
+                          (value-data b)))))
+    (set-value-children! out (list a b))
+    (set-value-local-grads! out (list (value-data b)
+                                      (value-data a)))
+    out))
+
+(define (vpow a n)
+  (let ((out (make-value (expt
+                          (value-data a) n))))
+    (set-value-children! out (list a))
+    (set-value-local-grads! out (list (* n
+                                         (expt (value-data a)
+                                             (- n 1)))))
+    out))
+
+(define (vlog a)
+  (let ((x (value-data a)))
+    (let ((out (make-value (log x))))
+      (set-value-children! out (list a))
+      (set-value-local-grads!
+       out
+       (list (/ 1.0 x)))
+      out)))
+
+(define (vexp a)
+
+  (let* ((x (value-data a))
+         (e (exp x))
+         (out (make-value e)))
+
+    (set-value-children! out (list a))
+
+    (set-value-local-grads!
+     out
+     (list e))
+
+    out))
+
+(define (vneg a)
+  (v* a (make-value -1.0)))
+
+(define (v- a b)
+  (v+ a (vneg b)))
+
+(define (v/ a b)
+  (v* a (vpow b -1)))
+
+;; RELU
+(define (vrelu a)
+  (let* ((x (value-data a))
+        (out (make-value (if (> x 0) x 0))))
+    (set-value-children! out (list a))
+    (set-value-local-grads! out (list (if (> x 0)
+                                          1.0
+                                          0.0)))
+    out))
+
+;; Topological sort
+(define (contains? xs x)
+  (cond ((null? xs) #f)
+        ((eq? (car xs) x) #t)
+        (else (contains? (cdr xs) x))))
+
+(define (build-topo v visited topo)
+  (if (contains? visited v)
+      (cons visited topo)
+      (let ((visited2 (cons v visited)))
+        (let loop ((children (value-children v))
+                   (vis visited2)
+                   (tp topo))
+          (if (null? children)
+              (cons vis (cons v tp))
+              (let* ((result (build-topo (car children)
+                                         vis
+                                         tp))
+                     (new-vis (car result))
+                     (new-topo (cdr result)))
+                (loop (cdr children)
+                      new-vis
+                      new-topo)))))))
+
+;; Back propagation
+(define (backward loss)
+
+  ;; Build topo order
+  (let* ((result (build-topo loss '() '()))
+         (topo (cdr result)))
+
+    ;; seed gradient
+    (set-value-grad! loss 1.0)
+
+    ;; reverse traversal
+    (for-each
+     (lambda (v)
+       (let ((grad (value-grad v))
+             (children (value-children v))
+             (locals (value-local-grads v)))
+         (let loop ((cs children)
+                    (ls locals))
+           (if (not (null? cs))
+               (begin
+                 (let* ((child (car cs))
+                        (local-grad (car ls))
+                        (new-grad
+                         (+ (value-grad child)
+                            (* local-grad grad))))
+                   (set-value-grad! child new-grad)
+                   (loop (cdr cs)
+                         (cdr ls))))
+               '()))))
+     topo)))
+
+;; depth of the transformer neural network
+;; (number of layers)
+(define n-layer 1)
+
+;; width of the network
+(define n-embd 16)
+
+;; Block size
+(define block-size 16)
+
+;; number of attention heads
+(define n-head 4)
+
+;; dimension of each head
+(define head-dim (quotient n-embd n-head))
+
+(define matrix
+  (lambda (nout nin std)
+    (map (lambda (_)
+           (map (lambda (_)
+                  (Value (random-gaussian 0 std)))
+                (iota nin)))
+         (iota nout))))
+
+(define state-dict
+  (append
+    (list
+      (cons 'wte
+            (matrix vocab-size n-embd))
+      (cons 'wpe
+            (matrix block-size n-embd))
+      (cons 'lm-head
+            (matrix vocab-size n-embd)))
+
+    (apply append
+      (map
+        (lambda (i)
+          (list
+            (cons
+              (string->symbol (format "layer~a.attn_wq" i))
+              (matrix n-embd n-embd))
+
+            (cons
+              (string->symbol (format "layer~a.attn_wk" i))
+              (matrix n-embd n-embd))
+
+            (cons
+              (string->symbol (format "layer~a.attn_wv" i))
+              (matrix n-embd n-embd))
+
+            (cons
+              (string->symbol (format "layer~a.attn_wo" i))
+              (matrix n-embd n-embd))
+
+            (cons
+              (string->symbol (format "layer~a.mlp_fc1" i))
+              (matrix (* 4 n-embd) n-embd))
+
+            (cons
+              (string->symbol (format "layer~a.mlp_fc2" i))
+              (matrix n-embd (* 4 n-embd)))))
+        
+        (iota n-layer)))))
+
+;; flatten deeply nested structure into a single list
+(define (flatten x)
+  (cond
+    ((null? x) '())
+    ((pair? x)
+     (append (flatten (car x))
+             (flatten (cdr x))))
+    (else (list x))))
+
+(define params
+  (flatten (map cdr state-dict)))
+  

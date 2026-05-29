@@ -1,5 +1,5 @@
 #lang racket
-; Autograd
+; Autograd engine for AI
 ; A Value Node
 ; data        -> scalar number
 ; grad        -> accumulated gradient
@@ -8,7 +8,7 @@
 
 (define (make-value data)
   (vector data ; data
-          0.0  ; grad
+          0.0  ; grad  
           '()  ; children
           '())) ; local-grads
 
@@ -313,7 +313,7 @@
 ;; ============================================================
 
 (displayln "====================================")
-(displayln "TEST 8 : Tiny neuron")
+(displayln "TEST 8 : Tiny neuron / AI")
 (displayln "====================================")
 
 (define w8 (make-value 2.0))

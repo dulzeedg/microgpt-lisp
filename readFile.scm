@@ -1,6 +1,6 @@
 #lang racket
 ;read file
-(define names (list "abdul"))
+(define names (list "Klaus"))
 (call-with-input-file "names.txt"
   (lambda (i)
     (define (readrec i)
@@ -20,5 +20,5 @@
     "n" "o" "p" "q" "r" "s"
     "t" "u" "v" "w" "x" "y" "z"))
 (define BOS (length uchars))
-(define vocab_size (+ (length uchars) 1))
-(display vocab_size)
+(define vocab-size (+ (length uchars) 1))
+(display vocab-size)
