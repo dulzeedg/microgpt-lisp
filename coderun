@@ -495,7 +495,7 @@
 (train 0)
 
 ;; block 6
-;; --- inference: may the model babble back to us ---
+;; inference
 (define temperature 0.5)
 (display "\n--- inference (new, hallucinated names) ---\n")
 
