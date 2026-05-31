@@ -25,6 +25,7 @@
             (loop (cons (string-trim line) lst)))))))
 
 (set! names (read-names "names.txt"))
+;;(set! names (list->vector (read-names "names.txt")))
 ;; ("abdul" "john" "mary")
 
 (define uchars
@@ -133,33 +134,52 @@
 
 (define (build-topo v visited topo)
   (if (contains? visited v)
-      (cons visited topo)
+      (values visited topo)
       (let ((visited2 (cons v visited)))
         (let loop ((children (value-children v))
                    (vis visited2)
                    (tp topo))
           (if (null? children)
-              (cons vis (cons v tp))
-              (let* ((res (build-topo (car children) vis tp)))
-                (loop (cdr children) (car res) (cdr res))))))))
+              (values vis (cons v tp))
+              (let-values (((vis2 tp2)
+                            (build-topo (car children) vis tp)))
+                (loop (cdr children) vis2 tp2)))))))
 
 ;; Backpropagation
+(define (zero-grads v)
+  (set-value-grad! v 0.0)
+  (for-each zero-grads (value-children v)))
+(define (reset-graph v seen)
+  (unless (contains? seen v)
+    (set-value-grad! v 0.0)
+    (for-each (lambda (c)
+                (reset-graph c (cons v seen)))
+              (value-children v))))
+
 (define (backward loss)
-  (let* ((res (build-topo loss '() '()))
-         (topo (cdr res)))
+  (let-values (((_ topo)
+                (build-topo loss '() '())))
+    
     (set-value-grad! loss 1.0)
+
     (let loop ((lst topo))
       (unless (null? lst)
         (let* ((v (car lst))
                (grad (value-grad v))
                (children (value-children v))
                (locals (value-local-grads v)))
+
+          ;; propagate gradients
           (let rec ((cs children) (ls locals))
             (unless (null? cs)
               (let ((child (car cs))
                     (local-grad (car ls)))
-                (set-value-grad! child (+ (value-grad child) (* local-grad grad)))
+                (set-value-grad!
+                 child
+                 (+ (value-grad child)
+                    (* local-grad grad)))
                 (rec (cdr cs) (cdr ls))))))
+
         (loop (cdr lst))))))
 
 ;; block 3
@@ -214,19 +234,19 @@
 
 ;; state dict
 (define state-dict
-  (make-eq-hash-table))
+  (make-hasheq))
 
-(hash-table-set!
+(hash-set!
  state-dict
  'wte
  (matrix vocab-size n-embd))
 
-(hash-table-set!
+(hash-set!
  state-dict
  'wpe
  (matrix block-size n-embd))
 
-(hash-table-set!
+(hash-set!
  state-dict
  'lm-head
  (matrix vocab-size n-embd))
@@ -234,7 +254,7 @@
 (let loop ((i 0))
   (if (< i n-layer)
       (begin
-        (hash-table-set!
+        (hash-set!
          state-dict       
          (string->symbol
           (string-append
@@ -243,7 +263,7 @@
            ".attn_wq"))
          (matrix n-embd n-embd))
 
-        (hash-table-set!
+        (hash-set!
          state-dict       
          (string->symbol
           (string-append
@@ -252,7 +272,7 @@
            ".attn_wk"))
          (matrix n-embd n-embd))
 
-        (hash-table-set!
+        (hash-set!
          state-dict       
          (string->symbol
           (string-append
@@ -261,7 +281,7 @@
            ".attn_wv"))
          (matrix n-embd n-embd))
 
-        (hash-table-set!
+        (hash-set!
          state-dict       
          (string->symbol
           (string-append
@@ -270,7 +290,7 @@
            ".attn_wo"))
          (matrix n-embd n-embd))
 
-        (hash-table-set!
+        (hash-set!
          state-dict       
          (string->symbol
           (string-append
@@ -280,7 +300,7 @@
          (matrix (* 4 n-embd)
                  n-embd))
 
-        (hash-table-set!
+        (hash-set!
          state-dict       
          (string->symbol
           (string-append
@@ -290,13 +310,17 @@
          (matrix n-embd
                  (* 4 n-embd)))
 
-        (loop (+ i 1)))))
+        (loop (+ i 1)))
+      'done1))
+(hash-count state-dict)
+(hash-keys state-dict)
+(displayln n-layer)
           
 ;; flatten deeply nested structure into a single list
 ;; flatten params
 (define params '())
 
-(hash-table-for-each
+(hash-for-each
  state-dict
  (lambda (k mat)
    (let loop1 ((i 0))
@@ -311,24 +335,26 @@
                       (cons
                        (vector-ref row j)
                        params))
-                     (loop2 (+ j 1))))))
-           (loop1 (+ i 1)))))))
+                     (loop2 (+ j 1)))
+                   'end)))
+           (loop1 (+ i 1)))
+         'end))))
 
 
 ;; block 4
 ;; model architecture
 ;; computes linear transoformation
 (define (dot a b)
-  (let loop ((i 0)
-             (acc (make-value 0.0)))
-    (if (= i (vector-length a))
-        acc
-        (loop (+ i 1)
-              (v+
-               acc
-               (v*
-                (vector-ref a i)
-                (vector-ref b i)))))))
+  (if (not (= (vector-length a) (vector-length b)))
+      (error "dot size mismatch")
+      (let loop ((i 0)
+                 (acc (make-value 0.0)))
+        (if (= i (vector-length a))
+            acc
+            (loop (+ i 1)
+                  (v+ acc
+                      (v* (vector-ref a i)
+                          (vector-ref b i))))))))
 ;; linear layer
 (define (linear x w)
   (let* ((nout (vector-length w))
@@ -356,7 +382,8 @@
              (max max-val
                   (value-data
                    (vector-ref logits i))))
-            (loop (+ i 1)))))
+            (loop (+ i 1)))
+          'end))
     (let ((exps
            (make-vector
             (vector-length logits)))
@@ -364,31 +391,32 @@
            (make-value 0.0)))
       (let loop ((i 0))
         (if (< i(vector-length logits))
-          (begin
-            (let ((e
-                   (vexp
-                    (v-
-                     (vector-ref logits i)
-                     (make-value max-val)))))
-              (vector-set! exps i e)
-              (set!
-               sum-exps
-               (v+ sum-exps e)))
-            (loop (+ i 1))))))
-  (let ((out
-         (make-vector
-          (vector-length logits))))
-    (let loop ((i 0))
-      (if (< i (vector-length logits))
-          (begin
-            (vector-set!
-             out
-             i
-             (v/
-              (vector-ref exps i)
-              sum-exps))
-            (loop (+ i 1)))
-          out))))
+            (begin
+              (let ((e
+                     (vexp
+                      (v-
+                       (vector-ref logits i)
+                       (make-value max-val)))))
+                (vector-set! exps i e)
+                (set!
+                 sum-exps
+                 (v+ sum-exps e)))
+              (loop (+ i 1)))
+            'end))
+      (let ((out
+             (make-vector
+              (vector-length logits))))
+        (let loop ((i 0))
+          (if (< i (vector-length logits))
+              (begin
+                (vector-set!
+                 out
+                 i
+                 (v/
+                  (vector-ref exps i)
+                  sum-exps))
+                (loop (+ i 1)))
+              out))))))
 
 (define (rmsnorm x)
   (let ((ms
@@ -403,7 +431,8 @@
             (v*
              (vector-ref x i)
              (vector-ref x i))))
-          (loop (+ i 1)))))
+          (loop (+ i 1)))
+        'end))
   (set!
    ms
    (v/
@@ -451,12 +480,12 @@
   ;; Embeddings:
   (let* ((tok-emb
           (vector-ref
-           (hash-table-ref state-dict 'wte)
+           (hash-ref state-dict 'wte)
            token-id))
          
          (pos-emb
           (vector-ref
-           (hash-table-ref state-dict 'wpe)
+           (hash-ref state-dict 'wpe)
            pos-id))
          
          (x
@@ -472,7 +501,8 @@
              (v+
               (vector-ref tok-emb i)
               (vector-ref pos-emb i)))
-            (loop (+ i 1)))))
+            (loop (+ i 1)))
+          'end))
     (set! x (rmsnorm x))
 
     ;; Transformer layers
@@ -482,7 +512,7 @@
           ;;final logits
           (linear
            x
-           (hash-table-ref
+           (hash-ref
             state-dict
             'lm-head))
 
@@ -493,7 +523,7 @@
                  (q
                   (linear
                    x-norm
-                   (hash-table-ref
+                   (hash-ref
                     state-dict
                      (string->symbol
                       (string-append
@@ -503,7 +533,7 @@
                   (k
                    (linear
                     x-norm
-                    (hash-table-ref
+                    (hash-ref
                      state-dict
                      (string->symbol
                       (string-append
@@ -513,7 +543,7 @@
                   (v
                    (linear
                     x-norm
-                    (hash-table-ref
+                    (hash-ref
                      state-dict
                      (string->symbol
                       (string-append
@@ -574,9 +604,10 @@
                                         attn-logits
                                         t
                                         score)
-                                       (t-loop (+ t 1))))))
+                                       (t-loop (+ t 1))))
+                                   'end))
                              ;; weights
-                             (let ((attn-weigths
+                             (let ((attn-weights
                                     (softmax attn-logits)))
                                ;;weighted sum
                                (let j-loop ((j 0))
@@ -606,13 +637,15 @@
                                                  (v*
                                                   (vector-ref attn-weights t)
                                                   (vector-ref v-h j)))))))
-                                       (j-loop (+ j 1)))))))
-                           (head-loop (+ h 1)))))
+                                       (j-loop (+ j 1)))
+                                     'end))))
+                           (head-loop (+ h 1)))
+                         'end))
                    ;;output projection
                    (let* ((x-proj
                            (linear
                             x-attn
-                            (hash-table-ref
+                            (hash-ref
                              state-dict
                              (string->symbol
                               (string-append
@@ -631,14 +664,15 @@
                               (v+
                                (vector-ref x-proj i)
                                (vector-ref x-residual i)))
-                             (loop (+ i 1)))))
+                             (loop (+ i 1)))
+                           'end))
                      ;; MLP
                      (let* ((x1-norm
                              (rmsnorm x1))
                             (fc1
                              (linear
                               x1-norm
-                              (hash-table-ref
+                              (hash-ref
                                state-dict
                                (string->symbol
                                 (string-append
@@ -657,19 +691,23 @@
                                 i
                                 (vrelu
                                  (vector-ref fc1 i)))
-                               (loop (+ i 1)))))
+                               (loop (+ i 1)))
+                             'end))
                        (let* ((fc2
                                (linear
                                 act
-                                (hash-table-ref
+                                (hash-ref
                                  state-dict
                                  (string->symbol
                                   (string-append
                                    "layer"
                                    (number->string li)
                                    ".mlp_fc2")))))
-                              ;;residual
-                              (let loop ((i 0))
+                              (x2
+                               (make-vector n-embd)))
+
+                         ;;residual
+                         (let loop ((i 0))
                                 (if (< i n-embd)
                                     (begin
                                       (vector-set!
@@ -678,10 +716,11 @@
                                        (v+
                                         (vector-ref fc2 i)
                                         (vector-ref x1 i)))
-                                      (loop (+ i 1)))))
+                                      (loop (+ i 1)))
+                                    'end))
                               ;; next layer
                               (layer-loop (+ li 1)
-                                          x2)))))))))))
+                                          x2))))))))))
 
 ;; block 5
 ;; adam optimizer and buffers
@@ -689,6 +728,9 @@
 (define beta1 0.85)
 (define beta2 0.99)
 (define eps-adam 1e-8)
+
+(set! params (list->vector (reverse params)))
+(define num-params (vector-length params))
 
 ;; first moment buffer
 (define m
@@ -701,37 +743,29 @@
 ;; number of training steps
 (define num-steps 1000)
 ;;helper
-(define (list-index lst x)
-  (let loop ((lst lst) (i 0))
+(define (vector-index vec x)
+  (let loop ((i 0))
     (cond
-      ((null? lst) (error "not found"))
-      ((equal? (car lst) x) i)
-      (else (loop (cdr lst) (+ i 1))))))
-
-(define keys (make-vector n-layer))
-(define values (make-vector n-layer))
-(let loop ((i 0))
-  (if (< i n-layer)
-      (begin
-        (vector-set! keys i (make-vector block-size))
-        (vector-set! values i (make-vector block-size))
-        (loop (+ i 1)))
-      'end))
+      ((= i (vector-length vec))
+       (error "not found"))
+      ((equal? (vector-ref vec i) x)
+       i)
+      (else
+       (loop (+ i 1))))))
 
 (define (train step)
   (if (= step num-steps)
       'done
       (let* (
-
              ;; document
-             (doc (vector-ref names (modulo step (vector-length names))))
-
+             (docs (list->vector names))
+             (doc (vector-ref docs (modulo step (vector-length docs))))
              ;; tokens
              (token-list
               (append
                (list BOS)
                (map (lambda (ch)
-                      (list-index uchars ch))
+                      (vector-index uchars ch))
                     (string->list doc))
                (list BOS)))
              (tokens
@@ -741,72 +775,91 @@
              (n (min block-size (- (vector-length tokens) 1)))
 
              ;; KV cache
-             ;;(keys (make-vector n-layer '()))
-             ;;(values (make-vector n-layer '()))
-
-             ;; forward pass
-             (losses
-              (let loop ((pos 0) (acc '()))
-                (if (= pos n)
-                    acc
-                    (let* ((token-id (vector-ref tokens pos))
-                           (target-id (vector-length tokens))
-
-               ;; forward
-               (logits (gpt token-id pos keys values))
-               (probs (softmax logits))
-
-               ;; loss (cross entropy)
-               (loss-t (vneg (vlog (vector-ref probs target-id)))))
-                      (loop (+ pos 1)
-                            (cons loss-t acc))))))
-             ;; loss
-             (loss
-              (v* (make-value (/ 1 n))
-                  (foldl v+ (make-value 0.0) losses))))
-
-        ;; backward
-        (backward loss)
-
-        ;; optimizer
+             (keys (make-vector n-layer))
+             (values (make-vector n-layer)))
+        ;; initialize caches
         (let loop ((i 0))
-          (if (< i num-params)
-              (let* ((p (vector-ref params i))
-                     (grad (value-grad p))
-
-                     (m-new (+ (* beta1 (vector-ref m i))
-                               (* (- 1 beta1) grad)))
-
-                     (v-new (+ (* beta2 (vector-ref v i))
-                               (* (- 1 beta2) (* grad grad))))
-
-                     (m-hat (/ m-new (- 1 (expt beta1 (+ step 1)))))
-                     (v-hat (/ v-new (- 1 (expt beta2 (+ step 1)))))
-
-                     (update (/ m-hat (+ (sqrt v-hat) eps-adam))))
-
-                (vector-set! m i m-new)
-                (vector-set! v i v-new)
-
-                (set-value-data!
-                 p
-                 (- (value-data p)
-                    (* learning-rate update)))
-
-                (set-value-grad! p 0.0)
-
+          (if (< i n-layer)
+              (begin
+                (vector-set! keys i (make-vector block-size (make-value 0.0)))
+                (vector-set! values i (make-vector block-size (make-value 0.0)))
                 (loop (+ i 1)))
-              'done))
+              'end))
+        
+        ;; forward pass
+        (let ((losses '()))
+          (let forward-loop ((pos 0))
+            (if (< pos n)
+                (begin
+                  (let*
+                      ((token-id
+                        (vector-ref tokens pos))
+                       (target-id
+                        (vector-ref tokens (+ pos 1)))
+                       (logits
+                        (gpt
+                         token-id
+                         pos
+                         keys
+                         values))
+                       (probs
+                        (softmax logits))
+                       
+                       ;; loss (cross entropy)
+                       (loss-t (vneg (vlog (vector-ref probs target-id)))))
+                    
+                    (set! losses
+                     (cons loss-t losses))
+                    (forward-loop (+ pos 1)))
+                  )
+                'done))
+          
+          (let*
+                ((loss
+                  (v*
+                   (make-value (/ 1 n))
+                   (foldl v+ (make-value 0.0) losses))))
+              ;; backward
+              (zero-grads loss)
+            (reset-graph loss '())
+              (backward loss)
 
-        ;; log
-        (displayln
-         (format "step ~a / ~a | loss ~a"
-                 (+ step 1)
-                 num-steps
-                 (value-data loss)))
+              ;; adam optimizer
+              (let loop ((i 0))
+                (if (< i num-params)
+                    (let* ((p (vector-ref params i))
+                           (grad (value-grad p))
+                           
+                            (m-new (+ (* beta1 (vector-ref m i))
+                                      (* (- 1 beta1) grad)))
 
-        (train (+ step 1)))))
-(train 0)
+                            (v-new (+ (* beta2 (vector-ref v i))
+                                      (* (- 1 beta2) (* grad grad))))
+                            
+                            (m-hat (/ m-new (- 1 (expt beta1 (+ step 1)))))
+                            (v-hat (/ v-new (- 1 (expt beta2 (+ step 1)))))
+
+                            (update (/ m-hat (+ (sqrt v-hat) eps-adam))))
+                      (vector-set! m i m-new)
+                      (vector-set! v i v-new)
+                      
+                         (set-value-data!
+                          p
+                          (- (value-data p)
+                             (* learning-rate update)))
+
+                      (set-value-grad! p 0.0)                      
+                      (loop (+ i 1)))
+                    'done))
+              ;; log
+              (displayln
+               (format "step ~a / ~a | loss ~a"
+                       (+ step 1)
+                       num-steps
+                       (value-data loss)))
+              (train (+ step 1))))
+        )))
+  (train 0)
 
 ;; block 6
 ;; inference
@@ -814,47 +867,113 @@
 (display "\n--- inference (new, hallucinated names) ---\n")
 
 ;; helper: weighted random choice
-;; helper: weighted random choice
 (define (weighted-random-choice weights)
-  (let* ((total (apply + weights))
-         (r (* total (random 1.0))))
-    
-    (let loop ((ws weights)
-               (acc 0.0)
-               (idx 0))
-
-      (if (null? ws)
-          (error "weighted-random-choice failed")
-
-          (let ((w (car ws)))
-            (if (< r (+ acc w))
-                idx
-                (loop (cdr ws)
-                      (+ acc w)
-                      (+ idx 1))))))))
+  (let ((total 0.0))
+    (let loop ((i 0))
+      (if (< i (vector-length weights))
+          (begin
+            (set!
+             total
+             (+ total
+                (vector-ref weights i)))
+            (loop (+ i 1)))
+          'done))
+    (let ((r (* total (random 1.0))))
+          (let loop ((i 0)
+                     (acc 0.0))
+            (if (= i (vector-length weights))
+                (- (vector-length weights) 1)
+                (let ((next
+                       (+ acc
+                          (vector-ref weights i))))
+                  (if (< r next)
+                      i
+                      (loop (+ i 1)
+                            next))))))))
 
 ;; helper: generate one sample recursively
 (define (generate-sample pos-id token-id keys values acc)
   (if (= pos-id block-size)
       acc
       (let* ((logits (gpt token-id pos-id keys values))
-             (scaled-logits (map (lambda (l) (v/ l (make-value temperature))) logits))
-             (probs (softmax scaled-logits))
-             (token-id-next (weighted-random-choice (map value-data probs))))
-        (if (= token-id-next BOS)
-            acc
-            (generate-sample (+ pos-id 1) token-id-next keys values
-                             (append acc (list (vector-ref uchars token-id-next))))))))
+             (scaled (make-vector (vector-length logits))))
+        ;; divide temp
+        (let loop ((i 0))
+          (if (< i (vector-length logits))
+              (begin
+                (vector-set!
+                 scaled
+                 i
+                 (v/
+                  (vector-ref logits i)
+                  (make-value temperature)))
+                (loop (+ i 1)))
+              'done))
+        (let*
+            ((probs
+              (softmax scaled))
+             (weights
+            (make-vector
+             (vector-length probs))))
+          (let loop ((i 0))
+            (if (< i (vector-length probs))
+                (begin
+                  (vector-set!
+                   weights
+                   i
+                   (value-data
+                    (vector-ref probs i)))
+                  (loop (+ i 1)))
+                'done))
+          (let ((token-id-next
+                 (weighted-random-choice
+                  weights)))
+            (if (= token-id-next BOS)
+                acc
+                (generate-sample
+                 (+ pos-id 1)
+                 token-id-next
+                 keys
+                 values
+                 (cons
+                  (vector-ref
+                   uchars
+                   token-id-next)
+                  acc))))))))
 
 ;; helper: generate n samples recursively
 (define (generate-n-samples sample-idx n)
   (if (= sample-idx n)
       'done
-      (let* ((keys (make-vector n-layer '()))
-             (values (make-vector n-layer '()))
-             (sample (generate-sample 0 BOS keys values '())))
-        (display (format "sample ~a: ~a\n" (+ sample-idx 1) (apply string-append sample)))
-        (generate-n-samples (+ sample-idx 1) n))))
+      (let ((keys (make-vector n-layer))
+            (values (make-vector n-layer)))
+        (let init ((i 0))
+          (if (< i n-layer)
+              (begin
+                (vector-set!
+                 keys i
+                 (make-vector block-size (make-value 0.0)))
+                (vector-set!
+                 values i
+                 (make-vector block-size (make-value 0.0)))
+                (init (+ i 1)))
+              'done))
+        (let ((sample
+               (reverse
+                (generate-sample
+                 0
+                 BOS
+                 keys
+                 values
+                 '()))))
+          (display
+           (format
+            "sample ~a: ~a\n"
+            (+ sample-idx 1)
+            (list->string sample)))
+          (generate-n-samples
+           (+ sample-idx 1)
+           n)))))
 
 ;; generate 20 samples
 (generate-n-samples 0 20)
