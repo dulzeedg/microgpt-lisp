@@ -1,6 +1,0 @@
-#lang typed/racket
-(require math/matrix typed/mod)
-
-(define (make-value data)
-  (vector make-array (data)
-          make-array 0.0))
