@@ -1,42 +1,30 @@
 #lang racket
-(require math/distributions)
-(require racket/list)
 
-;; block 1
-(define names (list "abdul"))
-
-;; read file line by line
-(define (read-names filename)
-  (let ((port (open-input-file filename)))
-    (let loop ((lst '()))
-      (let ((line (read-line port)))
-        (if (eof-object? line)
-            (begin (close-input-port port)
-                   (reverse lst))
-            (loop (cons (string-trim line) lst)))))))
-
-(set! names (read-names "names.txt"))
+;; block 
+(define names
+  (file->lines "names.txt"))
 
 (define uchars
-  (list->vector
-   (sort
-    (remove-duplicates
-     (apply append
-            (map string->list names))
-     char=?)
-    char<?)))
+     (list->vector
+      (sort
+       (remove-duplicates
+        (apply append
+               (map string->list names))
+        char=?)
+    char<?))) 
 
 (define BOS (vector-length uchars))
 
 (define vocab-size (+ BOS 1))
 
-(define char->token-table (make-hash))
-  (for ([i (in-range (vector-length uchars))])
-    (hash-set! char->token-table (vector-ref uchars i) i))
+(define char->token-table (make-hasheq))
+(for ([i (in-range (vector-length uchars))])
+  (hash-set! char->token-table (vector-ref uchars i) i))
+
 (define (char->token ch)
-  (hash-ref char->token-table ch (
-                                  lambda ()
-                                   (error "char not found"))))
+  (hash-ref char->token-table ch
+            (lambda ()
+              (error "char not found"))))
 
 ;; block 2
 ;; Autograd engine
@@ -47,12 +35,8 @@
           '())) ; 3: local-grads
 
 ;; Accessors
-(define (value-data v)
-  (unless (and (vector? v) (= (vector-length v) 4))
-    (error "BAD VALUE in value-data" v))
-  (vector-ref v 0))
+(define (value-data v) (vector-ref v 0))
 (define (value-grad v) (vector-ref v 1))
-
 (define (value-children v) (vector-ref v 2))
 (define (value-local-grads v) (vector-ref v 3))
 
@@ -108,10 +92,10 @@
   (let* ((out (make-value (/ (value-data a) (value-data b)))))
     (vector-set! out 2 (list a b))
     (vector-set! out 3
-      (list
-        (/ 1 (value-data b))              ; da
-        (/ (* -1 (value-data a))
-           (expt (value-data b) 2))))    ; db
+                 (list
+                  (/ 1 (value-data b))             
+                  (/ (* -1 (value-data a))
+                     (expt (value-data b) 2))))   
     out))
 
 (define (vrelu x)
@@ -129,7 +113,6 @@
         (else (contains? (cdr xs) x))))
 
 (define (build-topo v visited topo)
-
   (if (hash-has-key? visited v)
       topo
       (begin
@@ -143,21 +126,10 @@
                                tp)))
            (value-children v))
           (cons v tp)))))
-
-;; helper
-(define (reset-graph root visited)
-  (unless (hash-has-key? visited root)
-    (hash-set! visited root #t)
-    (set-value-grad! root 0.0)
-    (for-each
-     (lambda (c)
-       (reset-graph c visited))
-     (value-children root))))
-
 ;; Back propagation
 (define (backward loss)
   (define topo
-    (build-topo loss (make-hash) '()))
+    (build-topo loss (make-hasheq) '()))
 
   ;; zero grads
   (for-each (lambda (v)
@@ -179,12 +151,13 @@
         c
         (+ (value-grad c)
            (* grad l)))))
-   topo))
+   topo
+   ))
 
 ;; block 3
-;; depth of the transformer neural network (number of layers)
+;; hyperprams
 
-;; hypeparams
+;; depth of the transformer neural network (number of layers)
 (define n-layer 1)
 
 ;; width of the network
@@ -193,7 +166,7 @@
 ;; Block size
 (define block-size 16)
 
-;; number of attention heads
+;; number of attention heads 4
 (define n-head 4)
 
 ;; dimension of each head
@@ -218,25 +191,24 @@
     (for/vector ([j nin])
       (make-value (normal-random 0 std)))))
   
-(define state-dict
-  (make-hash))
+(define state-dict (make-hasheq))
 (hash-set! state-dict 'wte (param-matrix vocab-size n-embd))
 (hash-set! state-dict 'wpe (param-matrix block-size n-embd))
 (hash-set! state-dict 'lm-head (param-matrix vocab-size n-embd))
 
 (for ([i (in-range n-layer)])
   (hash-set! state-dict (string->symbol (format "layer~a.attn_wq" i))
-              (param-matrix n-embd n-embd))
+             (param-matrix n-embd n-embd))
   (hash-set! state-dict (string->symbol (format "layer~a.attn_wk" i))
-              (param-matrix n-embd n-embd))
+             (param-matrix n-embd n-embd))
   (hash-set! state-dict (string->symbol (format "layer~a.attn_wv" i))
-              (param-matrix n-embd n-embd))
+             (param-matrix n-embd n-embd))
   (hash-set! state-dict (string->symbol (format "layer~a.attn_wo" i))
-              (param-matrix n-embd n-embd))
+             (param-matrix n-embd n-embd))
   (hash-set! state-dict (string->symbol (format "layer~a.mlp_fc1" i))
-              (param-matrix (* 4 n-embd) n-embd))
+             (param-matrix (* 4 n-embd) n-embd))
   (hash-set! state-dict (string->symbol (format "layer~a.mlp_fc2" i))
-              (param-matrix n-embd (* 4 n-embd))))
+             (param-matrix n-embd (* 4 n-embd))))
 
 (define (params state-dict)
   (apply append
@@ -245,99 +217,14 @@
                   (for/list ([row mat])
                     (vector->list row))))))
 
-;; state-dict type : HashTable(Symbol → Vector(Vector(Value)))
-;; matrix     type : Vector(Vector(Value))
-;; params     type:  List(Value)
-
-
-;; -----------------------------------------
-;; Helper: get matrix shape safely
-;; -----------------------------------------
-(define (matrix-shape v)
-  (cond
-    [(vector? v)
-     (define rows (vector-length v))
-     (define cols (if (> rows 0)
-                      (let ([r0 (vector-ref v 0)])
-                        (if (vector? r0)
-                            (vector-length r0)
-                            1))
-                      0))
-     (list rows cols)]
-    [else '(0 0)]))
-
-;; -----------------------------------------
-;; Helper: parameter count
-;; -----------------------------------------
-(define (param-count v)
-  (define (count x)
-    (cond
-      [(vector? x)
-       (apply + (map count (vector->list x)))]
-      [else 1]))
-  (count v))
-
-;; -----------------------------------------
-;; Pretty model printer (PyTorch-style)
-;; -----------------------------------------
-(define (print-model state-dict)
-  (printf "\nMODEL SUMMARY\n")
-  (printf "============================\n\n")
-
-  (for ([(k v) (in-hash state-dict)])
-    (define shape (matrix-shape v))
-    (define params (param-count v))
-
-    (printf "~a\n" k)
-    (printf "  shape : ~a\n" shape)
-    (printf "  params: ~a\n\n" params)))
-
-;; -----------------------------------------
-;; Compact table view (optional)
-;; -----------------------------------------
-(define (print-table state-dict)
-  (printf "NAME\t\tROWS\tCOLS\tPARAMS\n")
-  (printf "------------------------------------------------\n")
-
-  (for ([(k v) (in-hash state-dict)])
-    (define shape (matrix-shape v))
-    (define rows (first shape))
-    (define cols (second shape))
-    (define params (param-count v))
-
-    (printf "~a\t~a\t~a\t~a\n"
-            k rows cols params)))
-
-;; -----------------------------------------
-;; Example usage
-;; -----------------------------------------
-(print-model state-dict)
-(print-table state-dict)
-
-;; Flatten everything once
-(define all-params (params state-dict))
-
-(define N 10)
-
-(displayln (string-append "total params: "
-                          (number->string (length all-params))))
-
-;; Print first 10 params safely
-(displayln (format "showing first ~a params only" N))
-(for ([p (take all-params (min N (length all-params)))])
-  (displayln p))
-
-(displayln (format "hash count state-dict: ~a"
-                    (hash-count state-dict)))
-(for ([(k v) (in-hash state-dict)])
-  (printf "~a: ~a params\n" k (length (vector->list v))))
 
 ;; helpers
 (define (linear x w)
-  ;; x: vector<Value>
-  ;; w: matrix vector<vector<Value>>
-
   (for/vector ([row w])
+    (unless (= (vector-length row)
+               (vector-length x))
+      (error "linear shape mismatch"))
+
     (let loop ((i 0)
                (acc (make-value 0.0)))
       (if (= i (vector-length row))
@@ -356,54 +243,40 @@
 
 (define (softmax logits)
   (define max-val (v-max logits))
-
   (define shifted
     (for/vector ([v logits])
       (v+ v (make-value (- max-val)))))
-
   (define exps
     (for/vector ([v shifted])
       (v-exp v)))
-
   (define total
     (let loop ((i 0) (acc (make-value 0.0)))
       (if (= i (vector-length exps))
           acc
           (loop (+ i 1)
                 (v+ acc (vector-ref exps i))))))
-
   (for/vector ([e exps])
     (v/ e total)))
 
 (define (rmsnorm x)
-  ;; compute mean square
   (let loop ((i 0)
              (ms (make-value 0.0)))
     (if (= i (vector-length x))
-        (let* ((ms (/ (value-data ms)
-                      (vector-length x)))
-               (norm (vpow (v+ (make-value ms)
-                               (make-value 1e-5))
-                           -0.5)))
-
-          (let ((out (make-vector (vector-length x))))
-            (let loop2 ((j 0))
-              (if (= j (vector-length x))
-                  out
-                  (begin
-                    (vector-set!
-                     out j
-                     (v* (vector-ref x j) norm))
-                    (loop2 (+ j 1)))))))
-
+        (let* ([ms (v/ ms (make-value (vector-length x)))]
+               [norm (vpow (v+ ms (make-value 1e-5)) -0.5)])
+          (define out (make-vector (vector-length x)))
+          (for ([j (in-range (vector-length x))])
+            (vector-set! out j
+                         (v* (vector-ref x j) norm)))
+          out)
         (loop (+ i 1)
               (v+ ms
                   (v* (vector-ref x i)
                       (vector-ref x i)))))))
+
 (define (dot a b)
   (unless (and (vector? a) (vector? b))
     (error "DOT ERROR: inputs must be vectors"))
-
   (unless (= (vector-length a) (vector-length b))
     (error "DOT ERROR: size mismatch"))
 
@@ -429,6 +302,7 @@
           out))))
 
 ;; block 4
+;; Attention
 (define (attention x li pos-id keys values)
 
   (define x-norm (rmsnorm x))
@@ -442,7 +316,7 @@
   (define k (linear x-norm Wk))
   (define v (linear x-norm Wv))
 
-  ;; KV cache update (OK: structure only)
+  ;; KV cache update
   (vector-set! (vector-ref keys li) pos-id k)
   (vector-set! (vector-ref values li) pos-id v)
 
@@ -451,17 +325,13 @@
   (define x-attn (make-vector n-embd))
 
   (for ([h (in-range n-head)])
-
     (define hs (* h head-dim))
 
     (define q-h (slice q hs (+ hs head-dim)))
 
-    ;; logits MUST be Value objects
     (define logits (make-vector (+ pos-id 1)))
-
-    ;; -----------------------
+    
     ;; compute attention scores
-    ;; -----------------------
     (for ([t (in-range (+ pos-id 1))])
 
       (define k-t (vector-ref (vector-ref keys li) t))
@@ -479,9 +349,7 @@
     ;; softmax over Value logits
     (define w (softmax logits))
 
-    ;; -----------------------
     ;; weighted sum of values
-    ;; -----------------------
     (for ([j (in-range head-dim)])
 
       (define acc
@@ -497,9 +365,7 @@
 
       (vector-set! x-attn (+ hs j) acc)))
 
-  ;; -----------------------
   ;; output projection
-  ;; -----------------------
   (define x-proj (linear x-attn Wo))
 
   ;; residual connection (scalar-safe)
@@ -507,19 +373,14 @@
     (vector-set! x-proj i
                  (v+ (vector-ref x-proj i)
                      (vector-ref x i))))
-
   x-proj)
 
+;; Multi-layer Perceptron
 (define (mlp x li)
-
-  ;; -------------------------
+  
   ;; layer norm (scalar graph)
-  ;; -------------------------
   (define x-norm (rmsnorm x))
-
-  ;; -------------------------
   ;; fc1 projection
-  ;; -------------------------
   (define W1
     (hash-ref state-dict
               (string->symbol
@@ -529,18 +390,14 @@
 
   (define fc1 (linear x-norm W1))
 
-  ;; -------------------------
   ;; activation (ReLU)
-  ;; -------------------------
   (define act (make-vector (* 4 n-embd)))
 
   (for ([i (in-range (* 4 n-embd))])
     (vector-set! act i
                  (vrelu (vector-ref fc1 i))))
 
-  ;; -------------------------
   ;; fc2 projection
-  ;; -------------------------
   (define W2
     (hash-ref state-dict
               (string->symbol
@@ -550,23 +407,19 @@
 
   (define fc2 (linear act W2))
 
-  ;; -------------------------
   ;; residual connection
-  ;; -------------------------
   (define out (make-vector n-embd))
 
   (for ([i (in-range n-embd)])
     (vector-set! out i
                  (v+ (vector-ref fc2 i)
                      (vector-ref x i))))
-
   out)
 
+;; GPT
 (define (gpt token-id pos-id keys values)
 
-  ;; -----------------------------
-  ;; 1. TOKEN + POSITION EMBEDDING
-  ;; -----------------------------
+  ;; 1. token + position embd
   (define tok-emb
     (vector-ref (hash-ref state-dict 'wte) token-id))
 
@@ -584,25 +437,15 @@
   ;; initial normalization (still scalar graph)
   (define x0 (rmsnorm x))
 
-  ;; -----------------------------
-  ;; 2. TRANSFORMER STACK
-  ;; -----------------------------
+  ;; 2. transformer stack
   (let layer-loop ((li 0)
                    (x x0))
-
     (if (= li n-layer)
-
-        ;; -------------------------
-        ;; 3. FINAL LOGITS
-        ;; -------------------------
+        ;; 3. final logits
         (linear x (hash-ref state-dict 'lm-head))
-
-        ;; -------------------------
-        ;; 4. ONE TRANSFORMER LAYER
-        ;; -------------------------
+        ;; 4. one transformer layer
         (let* ((x1 (attention x li pos-id keys values))
                (x2 (mlp x1 li)))
-
           (layer-loop (+ li 1) x2)))))
 
 ;; block 5
@@ -611,8 +454,7 @@
 (define beta2 0.99)
 (define eps-adam 1e-8)
 
-(define param-list (params state-dict))
-(define num-params (length param-list))
+(define num-params (length (params state-dict)))
 (define param-list-v
   (list->vector (params state-dict)))
 
@@ -626,64 +468,34 @@
 
 ;; number of training steps
 (define num-steps 1000)
-;;helper
-(define (vector-index vec x)
-  (let loop ((i 0))
-    (cond
-      ((= i (vector-length vec))
-       (error "not found"))
-      ((equal? (vector-ref vec i) x)
-       i)
-      (else
-       (loop (+ i 1))))))
 
 (define docs-vec
   (list->vector names))
 
 ;; adam optimizer and buffers
-;; =========================
 ;; OPTIMIZER (ADAM)
-;; =========================
-
 (define (adam-step params m v step lr beta1 beta2 eps)
-
-  (for ([i (in-range num-params)])
-
-    (define p (vector-ref param-list-v i))
+  (for ([i (in-range (vector-length params))])
+    (define p (vector-ref params i))
     (define g (value-grad p))
-
-    ;; -------------------------
     ;; first moment
-    ;; -------------------------
     (define m-new
       (+ (* beta1 (vector-ref m i))
          (* (- 1 beta1) g)))
-
-    ;; -------------------------
     ;; second moment
-    ;; -------------------------
     (define v-new
       (+ (* beta2 (vector-ref v i))
          (* (- 1 beta2) (* g g))))
-
-    ;; -------------------------
     ;; bias correction
-    ;; -------------------------
     (define m-hat
       (/ m-new (- 1 (expt beta1 (+ step 1)))))
 
     (define v-hat
       (/ v-new (- 1 (expt beta2 (+ step 1)))))
-
-    ;; -------------------------
     ;; update step
-    ;; -------------------------
     (define update
       (/ m-hat (+ (sqrt v-hat) eps)))
-
-    ;; -------------------------
     ;; write back state
-    ;; -------------------------
     (vector-set! m i m-new)
     (vector-set! v i v-new)
 
@@ -696,53 +508,32 @@
     ;; reset gradient
     (set-value-grad! p 0.0)))
 
-;; TRAIN STEP
-(define (train-step step doc)
+;; helpers for kv-cache
+(define (zero-embedding)
+  (for/vector ([i n-embd])
+    (make-value 0.0)))
 
-  ;; -----------------------------
-  ;; TOKENIZATION
-  ;; -----------------------------
+(define (make-kv-cache)
+  (for/vector ([layer n-layer])
+    (for/vector ([pos block-size])
+      (zero-embedding))))
+
+(define (train-step step doc)
+  ;; tokenization
   (define tokens
     (list->vector
      (append
       (list BOS)
-      (map (lambda (ch) (vector-index uchars ch))
-           (string->list doc))
+      (map char->token (string->list doc))
       (list BOS))))
 
   (define n (min block-size (- (vector-length tokens) 1)))
-
-  ;; -----------------------------
-  ;; KV CACHE (FIXED)
-  ;; -----------------------------
-  (define keys (make-vector n-layer))
-  (define values (make-vector n-layer))
-
-  (for ([i (in-range n-layer)])
-    (vector-set! keys i
-                 (make-vector block-size #f))
-
-    (vector-set! values i
-                 (make-vector block-size #f))
-
-    ;; IMPORTANT: fresh Value objects per position
-    (for ([j (in-range block-size)])
-      (vector-set! (vector-ref keys i)
-                   j
-                   (make-vector 0)) ; placeholder not used directly
-
-      (vector-set! (vector-ref values i)
-                   j
-                   (make-vector 0))))
-  ;; NOTE: actual Values are written by attention during forward pass
-
-  ;; -----------------------------
-  ;; LOSS COLLECTION
-  ;; -----------------------------
+  ;; kv cache
+  (define keys (make-kv-cache))
+  (define values (make-kv-cache))
+  
   (define losses (make-vector n (make-value 0.0)))
-
   (for ([pos (in-range n)])
-
     (define token-id (vector-ref tokens pos))
     (define target-id (vector-ref tokens (+ pos 1)))
 
@@ -753,10 +544,7 @@
       (vneg (vlog (vector-ref probs target-id))))
 
     (vector-set! losses pos loss))
-
-  ;; -----------------------------
-  ;; MEAN LOSS
-  ;; -----------------------------
+  
   (define loss
     (v* (make-value (/ 1 n))
         (let loop ((i 0)
@@ -765,87 +553,59 @@
               acc
               (loop (+ i 1)
                     (v+ acc (vector-ref losses i)))))))
-
-  ;; -----------------------------
-  ;; BACKWARD PASS
-  ;; -----------------------------
+  
   (backward loss)
-
-  ;; -----------------------------
-  ;; OPTIMIZER STEP
-  ;; -----------------------------
-  (adam-step param-list-v m v step
-             learning-rate
-             beta1 beta2 eps-adam)
-
-  (value-data loss))
-
-;; TRAIN LOOP
+  
+  (adam-step param-list-v m v step learning-rate beta1 beta2 eps-adam)
+  
+  loss)
 
 (define (train-loop)
-
   (let loop ((step 0))
-
     (when (< step num-steps)
-
-      (define doc
-        (vector-ref docs-vec
-                    (modulo step (vector-length docs-vec))))
+      (define doc (vector-ref docs-vec
+                              (modulo step (vector-length docs-vec))))
 
       (define loss (train-step step doc))
-
+      
       (displayln
        (format "step ~a / ~a | loss ~a"
                (+ step 1)
                num-steps
                (value-data loss)))
-
-      (loop (+ step 1)))))
-
-(train-loop)
+      (loop (+ step 1))
+      )))
 
 ;; inference
 (define temperature 0.5)
 
-;; -----------------------------
-;; weighted sampling (fixed)
-;; -----------------------------
+;; helper
 (define (weighted-random-choice weights)
-
   (define total
     (let loop ((i 0) (acc 0.0))
       (if (= i (vector-length weights))
           acc
           (loop (+ i 1)
                 (+ acc (vector-ref weights i))))))
-
   (define r (* total (random)))
-
   (let loop ((i 0)
              (acc 0.0))
     (cond
       [(= i (vector-length weights))
        (- (vector-length weights) 1)]
-
       [else
        (define next (+ acc (vector-ref weights i)))
        (if (< r next)
            i
            (loop (+ i 1) next))])))
 
-;; -----------------------------
-;; single step sampling
-;; -----------------------------
 (define (sample-step pos token-id keys values)
-
   (define logits (gpt token-id pos keys values))
-
   ;; temperature scaling (scalar-safe)
   (define scaled
     (for/vector ([i (in-range (vector-length logits))])
       (v* (vector-ref logits i)
           (make-value (/ 1.0 temperature)))))
-
   (define probs (softmax scaled))
 
   (define weights
@@ -854,23 +614,16 @@
 
   (weighted-random-choice weights))
 
-;; -----------------------------
 ;; generation
-;; -----------------------------
 (define (generate)
-
-  (define keys (make-vector n-layer))
-  (define values (make-vector n-layer))
-
-  (for ([i (in-range n-layer)])
-    (vector-set! keys i (make-vector block-size (make-value 0.0)))
-    (vector-set! values i (make-vector block-size (make-value 0.0))))
+  (define keys (make-kv-cache))
+  (define values (make-kv-cache))
 
   (define out '())
   (define token-id BOS)
 
   (let loop ((pos 0))
-    (when (< pos block-size)
+    (when (< pos (- block-size 1))
 
       (set! token-id
             (sample-step pos token-id keys values))
@@ -881,12 +634,31 @@
 
   (list->string (reverse out)))
 
-;; -----------------------------
 ;; batch generation
-;; -----------------------------
 (define (generate-n n)
   (for ([i (in-range n)])
     (printf "sample ~a: ~a\n"
             (+ i 1)
             (generate))))
-;;(generate-n 20)
+
+;; save model
+(define (save-model filename)
+  (call-with-output-file filename
+    #:exists 'replace
+    (lambda (out)
+      (write
+       (map value-data (params state-dict))
+       out))))
+
+(define (load-model filename)
+  (for ([p (params state-dict)]
+        [v (call-with-input-file filename read)])
+    (set-value-data! p v)))
+
+(train-loop)
+
+;;(save-model "model.dat")
+
+
+;;(load-model "model.dat")
+(generate-n 20)

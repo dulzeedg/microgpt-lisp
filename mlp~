@@ -1,0 +1,56 @@
+#lang racket
+(define (mlp x li)
+
+  ;; =========================
+  ;; layer normalization
+  ;; =========================
+  (let* ((x-norm (rmsnorm x))
+
+         ;; =========================
+         ;; weight lookup
+         ;; =========================
+         (fc1 (linear x-norm
+                      (hash-ref state-dict
+                                (string->symbol
+                                 (string-append "layer"
+                                                (number->string li)
+                                                ".mlp_fc1")))))
+
+         ;; expanded activation buffer (4x)
+         (act (make-vector (* 4 n-embd))))
+
+    ;; =========================
+    ;; activation function (ReLU)
+    ;; =========================
+    (let loop ((i 0))
+      (if (< i (* 4 n-embd))
+          (begin
+            (vector-set! act i
+                         (vrelu (vector-ref fc1 i)))
+            (loop (+ i 1)))
+          'done))
+
+    ;; =========================
+    ;; second linear projection
+    ;; =========================
+    (let* ((fc2 (linear act
+                        (hash-ref state-dict
+                                  (string->symbol
+                                   (string-append "layer"
+                                                  (number->string li)
+                                                  ".mlp_fc2")))))
+           (out (make-vector n-embd)))
+
+      ;; =========================
+      ;; residual connection
+      ;; =========================
+      (let loop ((i 0))
+        (if (< i n-embd)
+            (begin
+              (vector-set! out i
+                           (v+ (vector-ref fc2 i)
+                               (vector-ref x i)))
+              (loop (+ i 1)))
+            'done))
+
+      out))

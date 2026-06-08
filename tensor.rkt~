@@ -1,0 +1,96 @@
+#lang typed/racket
+
+(struct tensor
+  (
+   [data : (Vectorof Float)]
+   [shape : (Listof Integer)]
+   [strides : (Listof Integer)]
+   [grad : (Vectorof Float)]
+   [backward : (U False (-> Any))])
+
+  #:mutable)
+
+(provide tensor
+         make-tensor
+         t-data
+         t-shape
+         t-strides
+         t-grad
+         t-backward
+         zeros-flat
+         compute-strides
+         flatten
+         shape-of
+         tensor-flat)
+
+;; Constructor
+(: make-tensor (-> (Vectorof Float) (Listof Integer) tensor))
+(define (make-tensor data shape)
+  (define strides (compute-strides shape))
+  (define grad (zeros-flat data))
+
+  (unless (= (vector-length data)
+             (vector-length grad))
+    (error "tensor: data/grad mismatch"))
+  (tensor data shape strides grad #f))
+
+;; Accessors
+(define (t-data t) (tensor-data t))
+(define (t-shape t) (tensor-shape t))
+(define (t-strides t) (tensor-strides t))
+(define (t-grad t) (tensor-grad t))
+(define (t-backward t) (tensor-backward t))
+
+;; helpers
+(: zeros-flat (-> (Vectorof Float) (Vectorof Float)))
+(define (zeros-flat data)
+  (make-vector (vector-length data) 0.0))
+
+(: compute-strides (-> (Listof Integer) (Listof Integer)))
+(define (compute-strides shape)
+  (let loop ((s (reverse shape))
+             (acc 1)
+             (out : (Listof Integer) '()))
+    (if (null? s)
+        out
+        (let ((dim (car s)))
+          (loop (cdr s)
+                (* acc dim)
+                (cons acc out))))))
+
+;; Flatten nested vectors into a flat list
+(: flatten (-> Any (Listof Float)))
+(define (flatten x)
+  (cond
+    [(flonum? x)
+     (list x)]
+
+    [(vector? x)
+     (apply append
+            (map flatten (vector->list x)))]
+
+    [else
+     (error "invalid tensor input")]))
+
+;; Compute shape of nested vectors, recursively
+(: shape-of (-> Any (Listof Integer)))
+(define (shape-of x)
+  (cond
+    [(number? x)
+     '()]
+    [(vector? x)
+     (let ((len (vector-length x)))
+       (if (and (> len 0)
+                (vector? (vector-ref x 0)))
+           (let ((first (vector-ref x 0)))
+             (cons len (shape-of first)))
+           (list len)))]
+    [else
+     (error "bad tensor")]))
+
+;; Create a tensor from nested vectors
+(: tensor-flat (-> Any tensor))
+(define (tensor-flat x)
+  (define flat
+    (list->vector (flatten x)))
+  (make-tensor flat (shape-of x)))

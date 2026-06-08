@@ -1,5 +1,4 @@
 #lang racket
-
 ;; High level overview
 ;; text -> tokens -> embeddings -> transformer -> logits
 ;;      -> probabilities -> loss

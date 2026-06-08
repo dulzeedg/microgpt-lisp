@@ -1,0 +1,136 @@
+#lang racket
+(define (attention x li pos-id keys values)
+
+  ;; residual input is handled outside if desired
+  (let* ((x-norm (rmsnorm x))
+         
+         ;; projections
+         (q (linear x-norm
+                    (hash-ref state-dict
+                              (string->symbol
+                               (string-append "layer"
+                                              (number->string li)
+                                              ".attn_wq")))))
+         (k (linear x-norm
+                    (hash-ref state-dict
+                              (string->symbol
+                               (string-append "layer"
+                                              (number->string li)
+                                              ".attn_wk")))))
+         (v (linear x-norm
+                    (hash-ref state-dict
+                              (string->symbol
+                               (string-append "layer"
+                                              (number->string li)
+                                              ".attn_wv")))))
+
+         ;; KV cache update (side effect)
+         (begin
+           (vector-set! (vector-ref keys li)
+                        pos-id
+                        k)
+           (vector-set! (vector-ref values li)
+                        pos-id
+                        v))
+
+         ;; output buffer
+         (x-attn (make-vector n-embd)))
+
+    ;; =========================
+    ;; multi-head attention
+    ;; =========================
+    (let head-loop ((h 0))
+      (if (< h n-head)
+
+          (let* ((hs (* h head-dim))
+
+                 ;; query head slice
+                 (q-h (slice q hs (+ hs head-dim)))
+
+                 ;; logits per timestep
+                 (attn-logits (make-vector (+ pos-id 1))))
+
+            ;; -------------------------
+            ;; score computation
+            ;; -------------------------
+            (let t-loop ((t 0))
+              (if (<= t pos-id)
+
+                  (let* ((k-t (vector-ref (vector-ref keys li) t))
+                         (k-h (slice k-t hs (+ hs head-dim)))
+
+                         (score
+                          (let dot-loop ((j 0)
+                                         (acc (make-value 0.0)))
+                            (if (= j head-dim)
+                                (v/ acc (make-value (sqrt head-dim)))
+                                (dot-loop (+ j 1)
+                                          (v+ acc
+                                              (v*
+                                               (vector-ref q-h j)
+                                               (vector-ref k-h j))))))))
+
+                    (vector-set! attn-logits t score)
+                    (t-loop (+ t 1)))
+
+                  'done))
+
+            ;; -------------------------
+            ;; softmax weights
+            ;; -------------------------
+            (let ((attn-weights (softmax attn-logits)))
+
+              ;; -------------------------
+              ;; weighted sum of V
+              ;; -------------------------
+              (let j-loop ((j 0))
+                (if (< j head-dim)
+
+                    (let sum-loop ((t 0)
+                                   (acc (make-value 0.0)))
+
+                      (if (> t pos-id)
+
+                          (vector-set!
+                           x-attn
+                           (+ hs j)
+                           acc)
+
+                          (let* ((v-t (vector-ref (vector-ref values li) t))
+                                 (v-h (slice v-t hs (+ hs head-dim))))
+
+                            (sum-loop (+ t 1)
+                                      (v+ acc
+                                          (v*
+                                           (vector-ref attn-weights t)
+                                           (vector-ref v-h j)))))))
+
+                    (j-loop (+ j 1)))))
+
+            (head-loop (+ h 1)))
+
+          'done))
+
+    ;; =========================
+    ;; output projection
+    ;; =========================
+    (let* ((x-proj
+            (linear x-attn
+                    (hash-ref state-dict
+                              (string->symbol
+                               (string-append "layer"
+                                              (number->string li)
+                                              ".attn_wo")))))
+           (out (make-vector n-embd)))
+
+      ;; residual connection
+      (let loop ((i 0))
+        (if (< i n-embd)
+            (begin
+              (vector-set! out i
+                           (v+ (vector-ref x-proj i)
+                               (vector-ref x i)))
+              (loop (+ i 1)))
+            'done))
+
+      out)))
