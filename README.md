@@ -1,7 +1,6 @@
-# Goal: Rewriting microgpt in lisp
-# Why: Understand
-
 # GPT from Scratch in Racket
+## Goal: Rewriting microgpt in lisp
+## Why: Understand
 
 A pure Racket implementation of a GPT-style transformer language model inspired by Andrej Karpathy's "The most atomic way to train and run inference for a GPT in pure, dependency-free Python."
 
