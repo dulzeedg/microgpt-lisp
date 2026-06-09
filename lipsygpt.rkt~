@@ -191,7 +191,7 @@
     (for/vector ([j nin])
       (make-value (normal-random 0 std)))))
   
-(define state-dict (make-hasheq))  ;; used make-hasheg and performance increased significantly
+(define state-dict (make-hasheq))
 (hash-set! state-dict 'wte (param-matrix vocab-size n-embd))
 (hash-set! state-dict 'wpe (param-matrix block-size n-embd))
 (hash-set! state-dict 'lm-head (param-matrix vocab-size n-embd))
@@ -661,4 +661,4 @@
 
 
 ;;(load-model "model.dat")
-(generate-n 100)
+(generate-n 20)
